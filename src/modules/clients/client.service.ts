@@ -1,7 +1,12 @@
 import mongoose from "mongoose";
 import { Client } from "./client.model";
+import type { IClient } from "./client.model";
+import { Progress } from "../progress/progress.model";
 import { ApiError } from "../../utils/appError";
 import type { CreateClientInput, UpdateClientInput, ClientQuery } from "./client.types";
+
+type LeanClient = Omit<IClient, keyof mongoose.Document> & { _id: mongoose.Types.ObjectId; createdAt: Date; updatedAt: Date };
+type ClientWithProjects = LeanClient & { totalProjects: number };
 
 const CLIENT_POPULATE_FIELDS = "_id name email status picName phone address notes createdAt";
 
@@ -28,20 +33,35 @@ function buildFilter(query: ClientQuery) {
     return filter;
 }
 
-export async function getAllClients(query: ClientQuery) {
+export async function getAllClients(query: ClientQuery): Promise<{ clients: ClientWithProjects[]; pagination: { page: number; limit: number; total: number; totalPages: number } }> {
     const page = Math.max(1, parseInt(query.page ?? "1", 10));
     const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? "10", 10)));
     const skip = (page - 1) * limit;
 
     const filter = buildFilter(query);
 
-    const [clients, total] = await Promise.all([
+    const [clients, total, projectCounts] = await Promise.all([
         Client.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
         Client.countDocuments(filter),
+        Progress.aggregate([
+            { $group: { _id: "$client", count: { $sum: 1 } } },
+        ]),
     ]);
 
+    const countMap = new Map<string, number>(
+        projectCounts.map((x: { _id: mongoose.Types.ObjectId; count: number }) => [
+            x._id.toString(),
+            x.count,
+        ])
+    );
+
+    const clientsWithProjects = clients.map((c) => ({
+        ...c,
+        totalProjects: countMap.get((c._id as mongoose.Types.ObjectId).toString()) ?? 0,
+    }));
+
     return {
-        clients,
+        clients: clientsWithProjects,
         pagination: {
             page,
             limit,
@@ -51,13 +71,16 @@ export async function getAllClients(query: ClientQuery) {
     };
 }
 
-export async function getClientById(id: string) {
+export async function getClientById(id: string): Promise<ClientWithProjects> {
     if (!isValidObjectId(id)) throw ApiError.badRequest("Invalid client ID");
 
-    const client = await Client.findById(id).lean();
+    const [client, totalProjects] = await Promise.all([
+        Client.findById(id).lean(),
+        Progress.countDocuments({ client: new mongoose.Types.ObjectId(id) }),
+    ]);
     if (!client) throw ApiError.notFound("Client not found");
 
-    return client;
+    return { ...client, totalProjects };
 }
 
 export async function createClient(input: CreateClientInput) {
