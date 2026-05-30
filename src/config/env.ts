@@ -1,7 +1,10 @@
 import dotenv from "dotenv";
 import path from "path";
 
-dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+// Load .env only in local/development — Vercel injects env vars directly
+if (process.env["NODE_ENV"] !== "production") {
+    dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+}
 
 function requireEnv(key: string): string {
     const value = process.env[key];
